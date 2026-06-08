@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { View, StyleSheet } from "react-native";
+import { useWindowDimensions, View, StyleSheet } from "react-native";
 import { Button, Dialog, IconButton, Portal, Text } from "react-native-paper";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useAppTheme } from "../contexts/ThemeContext";
@@ -35,6 +35,7 @@ const slides: Slide[] = [
 
 const OnboardingModal: React.FC<Props> = ({ visible, onDone }) => {
   const { theme } = useAppTheme();
+  const { width } = useWindowDimensions();
   const [index, setIndex] = useState(0);
 
   const slide = useMemo(() => slides[index], [index]);
@@ -55,7 +56,11 @@ const OnboardingModal: React.FC<Props> = ({ visible, onDone }) => {
 
   return (
     <Portal>
-      <Dialog visible={visible} onDismiss={skip} style={styles.dialog}>
+      <Dialog
+        visible={visible}
+        onDismiss={skip}
+        style={[styles.dialog, { width: Math.min(width - 32, 420), alignSelf: "center" }]}
+      >
         <Dialog.Content>
           <View style={styles.topRow}>
             <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: "800" }}>
@@ -105,6 +110,7 @@ const OnboardingModal: React.FC<Props> = ({ visible, onDone }) => {
 const styles = StyleSheet.create({
   dialog: {
     borderRadius: 16,
+    maxWidth: 420,
   },
   topRow: {
     flexDirection: "row",
