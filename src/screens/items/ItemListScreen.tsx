@@ -1,5 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { ImageBackground, Keyboard, ScrollView, StyleSheet, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  ImageBackground,
+  Keyboard,
+  useWindowDimensions,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import {
   Button,
   Card,
@@ -10,32 +19,38 @@ import {
   Text,
 } from "react-native-paper";
 import Toast from "react-native-toast-message";
-import { createAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { useRoute } from "@react-navigation/native";
 import { useAppTheme } from "../../contexts/ThemeContext";
 import { useDictionary } from "../../contexts/DictionaryContext";
 import EmptyState from "../../components/EmptyState";
 import LoadingIndicator from "../../components/LoadingIndicator";
-import { findPhoneticText, getAudioOptions } from "../../services/dictionaryService";
+import {
+  findPhoneticText,
+  getAudioOptions,
+  validateSearchWord,
+} from "../../services/dictionaryService";
 
 const heroImage = require("../../../assets/lexidict-hero.png");
 
 const ItemListScreen = ({ navigation }: any) => {
   const { theme } = useAppTheme();
+  const { width } = useWindowDimensions();
   const route = useRoute<any>();
   const { entries, currentWord, error, isLoading, searchWord } = useDictionary();
   const [query, setQuery] = useState("");
   const [selectedAudioIndex, setSelectedAudioIndex] = useState(0);
+  const latestQueryRef = useRef("");
+  const previousAudioUrlRef = useRef("");
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const riseAnim = useRef(new Animated.Value(16)).current;
 
   const primaryEntry = entries[0] ?? null;
   const phonetic = findPhoneticText(primaryEntry);
   const audioOptions = useMemo(() => getAudioOptions(primaryEntry), [primaryEntry]);
   const selectedAudio = audioOptions[selectedAudioIndex] ?? audioOptions[0];
   const audioUrl = selectedAudio?.url || "";
-  const player = React.useMemo(
-    () => createAudioPlayer(audioUrl || null, { downloadFirst: true }),
-    [audioUrl],
-  );
+  const player = useAudioPlayer(audioUrl || null, { downloadFirst: true });
   const audioStatus = useAudioPlayerStatus(player);
 
   useEffect(() => {
@@ -47,6 +62,40 @@ const ItemListScreen = ({ navigation }: any) => {
       setSelectedAudioIndex(0);
     }
   }, [audioOptions.length, selectedAudioIndex]);
+
+  useEffect(() => {
+    const previousAudioUrl = previousAudioUrlRef.current;
+    if (audioUrl !== previousAudioUrl) {
+      previousAudioUrlRef.current = audioUrl;
+      try {
+        player.pause();
+        player.seekTo(0);
+      } catch {
+        // Keep the new word quiet even if the player is not ready yet.
+      }
+    }
+  }, [audioUrl, player]);
+
+  useEffect(() => {
+    if (!isLoading && primaryEntry) {
+      fadeAnim.setValue(0);
+      riseAnim.setValue(16);
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 260,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(riseAnim, {
+          toValue: 0,
+          duration: 260,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [primaryEntry, fadeAnim, riseAnim, isLoading]);
 
   useEffect(() => {
     navigation.setOptions({
@@ -65,8 +114,9 @@ const ItemListScreen = ({ navigation }: any) => {
     if (word && word !== currentWord) {
       setQuery(word);
       searchWord(word);
+      navigation.setParams({ word: undefined });
     }
-  }, [route.params?.word, currentWord, searchWord]);
+  }, [navigation, route.params?.word, currentWord, searchWord]);
 
   const totalDefinitions = useMemo(
     () =>
@@ -84,16 +134,18 @@ const ItemListScreen = ({ navigation }: any) => {
 
   const handleSearch = async (word = query) => {
     Keyboard.dismiss();
-    const normalized = word.trim();
-    if (!normalized) {
+    const validationMessage = validateSearchWord(word);
+    if (validationMessage) {
       Toast.show({
         type: "info",
-        text1: "Search field is empty",
-        text2: "Enter an English word first.",
+        text1: "Input error",
+        text2: validationMessage,
       });
       return;
     }
+    const normalized = word.trim();
     setQuery(normalized);
+    latestQueryRef.current = normalized;
     await searchWord(normalized);
   };
 
@@ -105,7 +157,9 @@ const ItemListScreen = ({ navigation }: any) => {
         player.pause();
         return;
       }
-      await player.seekTo(0);
+      if (audioStatus.didJustFinish || audioStatus.currentTime >= audioStatus.duration - 0.15) {
+        await player.seekTo(0);
+      }
       player.play();
     } catch {
       Toast.show({
@@ -129,13 +183,25 @@ const ItemListScreen = ({ navigation }: any) => {
     }
   };
 
+  const getAudioIcon = () => {
+    if (audioStatus.isBuffering) return "progress-clock";
+    if (audioStatus.playing) return "pause-circle";
+    if (audioStatus.currentTime > 0 && !audioStatus.didJustFinish) return "play-circle";
+    return "volume-high";
+  };
+
   return (
     <ScrollView
       keyboardShouldPersistTaps="handled"
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       contentContainerStyle={styles.content}
     >
-      <ImageBackground source={heroImage} resizeMode="cover" style={styles.heroImage} imageStyle={styles.heroImageInner}>
+      <ImageBackground
+        source={heroImage}
+        resizeMode="cover"
+        style={[styles.heroImage, { height: width > 700 ? 220 : 190 }]}
+        imageStyle={styles.heroImageInner}
+      >
         <View style={styles.heroOverlay}>
           <Text variant="headlineSmall" style={styles.heroTitle}>
             LexiDict
@@ -153,15 +219,18 @@ const ItemListScreen = ({ navigation }: any) => {
         <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.onSurface }]}>
           Find a word
         </Text>
-        <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+        <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, lineHeight: 22 }}>
           Search English meanings, pronunciation, parts of speech, and examples.
         </Text>
 
         <Searchbar
           placeholder="Type a word, e.g. hello"
           value={query}
-          onChangeText={setQuery}
-          onSubmitEditing={() => handleSearch()}
+          onChangeText={(text) => {
+            setQuery(text);
+            latestQueryRef.current = text;
+          }}
+          onSubmitEditing={(event) => handleSearch(event.nativeEvent.text || latestQueryRef.current)}
           returnKeyType="search"
           autoCapitalize="none"
           autoCorrect={false}
@@ -172,7 +241,7 @@ const ItemListScreen = ({ navigation }: any) => {
         <Button
           mode="contained"
           icon="magnify"
-          onPress={() => handleSearch()}
+          onPress={() => handleSearch(latestQueryRef.current || query)}
           loading={isLoading}
           disabled={isLoading}
           style={styles.searchButton}
@@ -187,13 +256,23 @@ const ItemListScreen = ({ navigation }: any) => {
       ) : null}
 
       {!isLoading && error ? (
-        <EmptyState
-          icon="book-alert-outline"
-          title={error.includes("not found") ? "Word not found" : "Search failed"}
-          subtitle={error}
-          actionLabel={query ? "Try again" : undefined}
-          onAction={query ? () => handleSearch() : undefined}
-        />
+        error.includes("not found") ? (
+          <EmptyState
+            variant="not-found"
+            title="Word not found"
+            subtitle={`${error} Try another word or check the spelling.`}
+            actionLabel={query ? "Try again" : undefined}
+            onAction={query ? () => handleSearch(latestQueryRef.current || query) : undefined}
+          />
+        ) : (
+          <EmptyState
+            icon="book-alert-outline"
+            title="Search failed"
+            subtitle={error}
+            actionLabel={query ? "Try again" : undefined}
+            onAction={query ? () => handleSearch(latestQueryRef.current || query) : undefined}
+          />
+        )
       ) : null}
 
       {!isLoading && !error && entries.length === 0 ? (
@@ -205,7 +284,15 @@ const ItemListScreen = ({ navigation }: any) => {
       ) : null}
 
       {!isLoading && !error && primaryEntry ? (
-        <View style={styles.results}>
+        <Animated.View
+          style={[
+            styles.results,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: riseAnim }],
+            },
+          ]}
+        >
           <Surface
             style={[styles.wordHeader, { backgroundColor: theme.colors.primaryContainer }]}
             elevation={0}
@@ -224,25 +311,15 @@ const ItemListScreen = ({ navigation }: any) => {
                   </Text>
                 ) : null}
                 {audioUrl ? (
-                  <Button
-                    mode="text"
-                    compact
-                    icon={
-                      audioStatus.playing
-                        ? "pause"
-                        : audioStatus.isBuffering
-                          ? "progress-clock"
-                          : "play"
-                    }
+                  <IconButton
+                    icon={getAudioIcon()}
+                    size={28}
                     loading={audioStatus.isBuffering}
                     disabled={audioStatus.isBuffering}
-                    textColor={theme.colors.onPrimaryContainer}
+                    iconColor={theme.colors.onPrimaryContainer}
                     onPress={togglePronunciation}
                     style={styles.playButton}
-                    contentStyle={styles.playButtonContent}
-                  >
-                    {audioStatus.playing ? "Pause" : "Play"}
-                  </Button>
+                  />
                 ) : null}
               </View>
               <Text variant="bodySmall" style={{ color: theme.colors.onPrimaryContainer, marginTop: 2 }}>
@@ -252,18 +329,14 @@ const ItemListScreen = ({ navigation }: any) => {
 
             {audioOptions.length > 0 ? (
               <View style={styles.audioControls}>
-                <Button
-                  mode="text"
-                  compact
-                  icon="stop"
+                <IconButton
+                  icon="stop-circle"
+                  size={28}
                   disabled={!audioStatus.playing && audioStatus.currentTime === 0}
-                  textColor={theme.colors.onPrimaryContainer}
+                  iconColor={theme.colors.onPrimaryContainer}
                   onPress={stopPronunciation}
                   style={styles.stopButton}
-                  contentStyle={styles.playButtonContent}
-                >
-                  Stop
-                </Button>
+                />
               </View>
             ) : null}
           </Surface>
@@ -345,7 +418,7 @@ const ItemListScreen = ({ navigation }: any) => {
               ))}
             </View>
           ))}
-        </View>
+        </Animated.View>
       ) : null}
     </ScrollView>
   );
@@ -372,7 +445,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
+    borderColor: "rgba(5,31,32,0.12)",
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
   },
   title: { fontWeight: "800", marginBottom: 4 },
   searchbar: { marginTop: 16, borderRadius: 8, elevation: 0 },
@@ -398,22 +475,15 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     marginTop: 4,
   },
-  playButton: {
-    marginLeft: -6,
-  },
-  playButtonContent: {
-    minHeight: 34,
-  },
+  playButton: { marginLeft: -6 },
   audioControls: { alignItems: "center" },
-  stopButton: {
-    marginRight: -6,
-  },
+  stopButton: { marginRight: -6 },
   audioVariants: {
     borderRadius: 8,
     padding: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.06)",
+    borderColor: "rgba(5,31,32,0.12)",
   },
   audioVariantRow: {
     flexDirection: "row",

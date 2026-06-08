@@ -44,6 +44,27 @@ export const findPhoneticText = (entry?: DictionaryEntry | null) => {
   );
 };
 
+export const validateSearchWord = (word: string) => {
+  const trimmed = word.trim();
+  if (!trimmed) {
+    return "Please enter a word to search.";
+  }
+
+  if (/\s/.test(trimmed)) {
+    return "Please search for one word, not a sentence.";
+  }
+
+  if (/\d/.test(trimmed)) {
+    return "Please search for a word instead of numbers.";
+  }
+
+  if (!/^[a-zA-Z]+$/.test(trimmed)) {
+    return "Please search for a word instead of numbers.";
+  }
+
+  return "";
+};
+
 export const fetchWordDefinitions = async (word: string): Promise<DictionaryEntry[]> => {
   const normalized = word.trim().toLowerCase();
   if (!normalized) {
